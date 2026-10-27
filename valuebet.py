@@ -83,21 +83,112 @@ st.title("🚀 Pro System Analityczny z Skanerem i Kuponem")
 if KLUCZ_API == "TUTAJ_WKLEJ_SWOJ_TOKEN":
     st.error("Wklej swój token API w kodzie pliku!")
 else:
-    wybrana_liga = st.selectbox("Wybierz ligę:", list(LIGI.keys()))
-    kod_ligi = LIGI[wybrana_liga]
+    tryb = st.radio("Wybierz tryb pracy:", ["🔍 Analiza pojedynczego meczu", "⚡ Skaner całej kolejki", "📡 Radar (Watchlist)"], horizontal=True)
+    st.divider()
     
-    with st.spinner("Pobieranie danych..."):
-        wszystkie_mecze = pobierz_dane_ligi(kod_ligi)
-        
+    wszystkie_mecze = []
+    
+    if tryb == "📡 Radar (Watchlist)":
+        with st.spinner("Pobieranie i łączenie danych z Top 5 Lig Europy..."):
+            for kod in LIGI.values():
+                wszystkie_mecze.extend(pobierz_dane_ligi(kod))
+    else:
+        wybrana_liga = st.selectbox("Wybierz ligę:", list(LIGI.keys()))
+        kod_ligi = LIGI[wybrana_liga]
+        with st.spinner("Pobieranie danych..."):
+            wszystkie_mecze = pobierz_dane_ligi(kod_ligi)
+            
     if not wszystkie_mecze:
         st.warning("Brak danych z API.")
     else:
         nadchodzace = [m for m in wszystkie_mecze if m['status'] in ['SCHEDULED', 'TIMED', 'LIVE', 'IN_PLAY']]
         
-        tryb = st.radio("Wybierz tryb pracy:", ["🔍 Analiza pojedynczego meczu", "⚡ Skaner całej kolejki / ligi"], horizontal=True)
-        st.divider()
-        
-        if tryb == "⚡ Skaner całej kolejki / ligi":
+        # --- NOWY TRYB: RADAR ---
+        if tryb == "📡 Radar (Watchlist)":
+            st.subheader(f"📡 Globalny Radar Drużyn – Top 5 Lig")
+            st.write("Wybierz drużyny z dowolnej z pięciu najlepszych lig, które chcesz śledzić. Radar wychwyci anomalie, gdy bukmacherzy zaniżają kursy na faworytów przez tzw. 'owczy pęd' graczy.")
+            
+            druzyny_w_lidze = set()
+            for m in wszystkie_mecze:
+                druzyny_w_lidze.add(m['homeTeam']['name'])
+                druzyny_w_lidze.add(m['awayTeam']['name'])
+                
+            obserwowane = st.multiselect("Wybierz zespoły do radaru (możesz wyszukiwać wpisując nazwę):", sorted(list(druzyny_w_lidze)))
+            
+            if obserwowane:
+                mecze_radaru = [m for m in nadchodzace if m['homeTeam']['name'] in obserwowane or m['awayTeam']['name'] in obserwowane]
+                
+                if not mecze_radaru:
+                    st.info("Brak nadchodzących meczów dla wybranych drużyn w systemie.")
+                else:
+                    for m in mecze_radaru:
+                        h_name = m['homeTeam']['name']
+                        a_name = m['awayTeam']['name']
+                        
+                        strz_g, strac_g, il_g, _ = pobierz_ostatnie_mecze_szczegoly(h_name, wszystkie_mecze)
+                        strz_w, strac_w, il_w, _ = pobierz_ostatnie_mecze_szczegoly(a_name, wszystkie_mecze)
+                        
+                        exp_gosp = (strz_g + strac_w) / 2
+                        exp_gosc = (strz_w + strac_g) / 2
+                        
+                        p_1 = p_x = p_2 = 0
+                        for gd in range(6):
+                            for gw in range(6):
+                                p = prawdopodobienstwo_poissona(exp_gosp, gd) * prawdopodobienstwo_poissona(exp_gosc, gw)
+                                if gd > gw: p_1 += p
+                                elif gd == gw: p_x += p
+                                else: p_2 += p
+                                
+                        suma = p_1 + p_x + p_2
+                        s1 = (p_1 / suma) * 100 if suma > 0 else 0
+                        sx = (p_x / suma) * 100 if suma > 0 else 0
+                        s2 = (p_2 / suma) * 100 if suma > 0 else 0
+                        
+                        fair_1 = 100/s1 if s1 > 0 else 0
+                        fair_x = 100/sx if sx > 0 else 0
+                        fair_2 = 100/s2 if s2 > 0 else 0
+                        
+                        sledzona = h_name if h_name in obserwowane else a_name
+                        przeciwnik = a_name if h_name in obserwowane else h_name
+                        
+                        with st.expander(f"👁️ Mecz: {h_name} vs {a_name} ({m['utcDate'][:10]})", expanded=True):
+                            st.write(f"**Śledzisz:** `{sledzona}`")
+                            
+                            c_kurs1, c_kurs2, c_kurs3 = st.columns(3)
+                            k_1 = c_kurs1.number_input(f"Bukmacher: 1 ({h_name})", value=2.00, step=0.05, key=f"r1_{m['id']}")
+                            k_x = c_kurs2.number_input(f"Bukmacher: X", value=3.20, step=0.05, key=f"rx_{m['id']}")
+                            k_2 = c_kurs3.number_input(f"Bukmacher: 2 ({a_name})", value=3.50, step=0.05, key=f"r2_{m['id']}")
+                            
+                            ev_1 = (k_1 * (s1/100)) - 1
+                            ev_x = (k_x * (sx/100)) - 1
+                            ev_2 = (k_2 * (s2/100)) - 1
+                            
+                            st.write("---")
+                            if h_name == sledzona:
+                                szansa_sledzonej = s1
+                                fair_sledzonej = fair_1
+                                ev_sledzonej = ev_1
+                                k_sledzonej = k_1
+                                k_przeciwnika = k_2
+                                nazwa_zakladu_przeciwko = f"X2 ({przeciwnik} nie przegra)"
+                            else:
+                                szansa_sledzonej = s2
+                                fair_sledzonej = fair_2
+                                ev_sledzonej = ev_2
+                                k_sledzonej = k_2
+                                k_przeciwnika = k_1
+                                nazwa_zakladu_przeciwko = f"1X ({przeciwnik} nie przegra)"
+
+                            if ev_sledzonej > 0:
+                                st.success(f"🟢 **Czyste Value!** Rynek niedocenia `{sledzona}`. Bukmacher płaci {k_sledzonej}, a uczciwy kurs z matematyki to {fair_sledzonej:.2f}.")
+                            elif ev_sledzonej < -0.15 and k_sledzonej < 1.60:
+                                st.error(f"🔴 **Przegrzany Rynek (Overvalued)!** Tłum masowo obstawia `{sledzona}` zbijając kurs do {k_sledzonej}. Model pokazuje, że to nieopłacalne (Fair: {fair_sledzonej:.2f}).")
+                                st.warning(f"💡 **Zagranie Contrarian:** Rozważ typ **{nazwa_zakladu_przeciwko}** lub handicap w stronę drużyny `{przeciwnik}`. Bukmacher przepłaca za niespodziankę!")
+                            else:
+                                st.info(f"⚪ **Rynek stabilny.** Kursy bukmachera ({k_sledzonej}) pokrywają się z grubsza z modelem ({fair_sledzonej:.2f}). Brak anomalii.")
+
+        # --- TRYB: SKANER CAŁEJ KOLEJKI ---
+        elif tryb == "⚡ Skaner całej kolejki":
             st.subheader(f"⚡ Skaner nadchodzących meczów: {wybrana_liga}")
             uwzglednij_dom_skaner = st.checkbox("🏠 Uwzględnij atut własnego boiska w skanerze", value=False)
             
@@ -156,6 +247,7 @@ else:
                     else:
                         st.warning("Brak meczów do przetworzenia.")
                         
+        # --- TRYB: POJEDYNCZY MECZ ---
         else:
             if not nadchodzace:
                 st.warning("Brak nadchodzących meczów.")
@@ -218,15 +310,6 @@ else:
                             df_w = pd.DataFrame(hist_w)
                             fig_w = px.bar(df_w, x='Data', y=['Strzelone', 'Stracone'], barmode='group', title="Gość")
                             st.plotly_chart(fig_w, use_container_width=True)
-                
-                with st.expander("🤝 Historia bezpośrednia (H2H w bieżącym sezonie)"):
-                    h2h_mecze = pobierz_h2h(gospodarz, gosc, wszystkie_mecze)
-                    if not h2h_mecze:
-                        st.write("ℹ️ Brak bezpośrednich spotkań w bieżącej bazie.")
-                    else:
-                        for hm in h2h_mecze:
-                            sc = hm.get('score', {}).get('fullTime', {})
-                            st.write(f"- **{hm['utcDate'][:10]}**: {hm['homeTeam']['name']} {sc.get('home')} : {sc.get('away')} {hm['awayTeam']['name']}")
                 
                 max_gole = 6
                 macierz = [[0.0]*max_gole for _ in range(max_gole)]
@@ -320,11 +403,8 @@ else:
                                 args=(f"{gospodarz} vs {gosc}", nazwa, kurs)
                             )
                 
-                # --- NOWY MODUŁ: KALKULATOR STRZELCA ---
                 st.divider()
                 st.subheader("🏃 Ręczny Kalkulator Strzelca (Player Props)")
-                st.write("Wpisz szacowany udział zawodnika w bramkach drużyny (np. procentowy udział goli w sezonie), a model wyliczy szansę na jego trafienie w tym konkretnym meczu!")
-
                 col_strz1, col_strz2, col_strz3 = st.columns(3)
                 with col_strz1:
                     druzyna_strzelca = st.radio("Zawodnik z drużyny:", [gospodarz, gosc])
@@ -339,9 +419,7 @@ else:
                     team_xg = exp_gosp if druzyna_strzelca == gospodarz else exp_gosc
                     player_xg = team_xg * (udzial_procent / 100)
                     
-                    # Prawdopodobieństwo 0 goli z rozkładu Poissona
                     p_0 = prawdopodobienstwo_poissona(player_xg, 0)
-                    # Prawdopodobieństwo na minimum 1 gola
                     p_strzeli = 1 - p_0
                     szansa_strzeli_proc = p_strzeli * 100
                     fair_strzelec = 1 / p_strzeli if p_strzeli > 0 else 0
@@ -366,7 +444,6 @@ else:
                             on_click=dodaj_do_kuponu,
                             args=(f"{gospodarz} vs {gosc}", f"Gol: {nazwa_strzelca}", kurs_strzelec)
                         )
-                # ---------------------------------------
 
         st.divider()
         st.subheader("🎟️ Twój Wirtualny Kupon (Bet Slip)")
